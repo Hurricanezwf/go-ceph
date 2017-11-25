@@ -117,9 +117,6 @@ func Signature(secretKey string, r *http.Request) string {
 		canonical += "?" + strings.Join(newQuerySlice, "&")
 	}
 
-	debug := strings.Replace(canonical, `\`, `\`, -1)
-	fmt.Printf("%s\n", debug)
-
 	hashmac := Hashmac([]byte(canonical), []byte(secretKey))
 	b64 := base64.StdEncoding.EncodeToString(hashmac)
 	return b64

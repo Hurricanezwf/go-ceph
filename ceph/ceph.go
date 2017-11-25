@@ -20,19 +20,19 @@ func NewCeph(ip string, port int, accessKey, secretKey string) *Ceph {
 }
 
 func (c *Ceph) SetIP(ip string) {
-
+	c.IP = ip
 }
 
 func (c *Ceph) SetPort(port int) {
-
+	c.Port = port
 }
 
 func (c *Ceph) SetAccessKey(k string) {
-
+	c.AccessKey = k
 }
 
 func (c *Ceph) SetSecretKey(k string) {
-
+	c.SecretKey = k
 }
 
 func (c *Ceph) Do(r Request) (Response, error) {
