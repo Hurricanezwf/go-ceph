@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"log"
+	"reflect"
 
 	"github.com/Hurricanezwf/go-ceph/ceph"
 )
@@ -46,8 +47,19 @@ func GetAllBuckets(c *ceph.Ceph) {
 	resp, err := c.Do(r)
 	if err != nil {
 		log.Printf("%v\n", err)
+		return
 	}
-	_ = resp
+
+	gabresp, ok := resp.(*ceph.GetAllBucketsResponse)
+	if !ok {
+		log.Printf("Invalid response type, type is %v", reflect.TypeOf(resp))
+		return
+	}
+
+	log.Println("GetAllBuckets result:")
+	for idx, b := range gabresp.Buckets.BucketList {
+		log.Printf("(%d) %s\n", idx, b.Name)
+	}
 }
 
 func GetBucket(c *ceph.Ceph) {

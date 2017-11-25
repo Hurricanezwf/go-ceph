@@ -2,6 +2,7 @@ package ceph
 
 import (
 	"bytes"
+	"encoding/xml"
 	"errors"
 	"fmt"
 	"io/ioutil"
@@ -14,8 +15,10 @@ type Request interface {
 }
 
 type Response interface {
+	Detail() []byte
 }
 
+////////////////////////////////////////////////////////////
 type RequestParam struct {
 	Host      string
 	AccessKey string
@@ -38,11 +41,26 @@ func (p RequestParam) Validate() error {
 	return nil
 }
 
-/////////////////////////////////////////////////////
-type GetAllBucketsRequest struct {
+/////////////////////////////////////////////////////////////
+type Owner struct {
+	XMLName     xml.Name `xml:"Owner"`
+	ID          string   `xml:"ID"`
+	DisplayName string   `xml:"DisplayName"`
 }
 
-type GetAllBucketsResponse struct {
+type Buckets struct {
+	XMLName    xml.Name `xml:"Buckets"`
+	BucketList []Bucket `xml:"Bucket"`
+}
+
+type Bucket struct {
+	XMLName      xml.Name `xml:"Bucket"`
+	Name         string   `xml:"Name"`
+	CreationDate string   `xml:"CreationDate"`
+}
+
+/////////////////////////////////////////////////////////////
+type GetAllBucketsRequest struct {
 }
 
 func NewGetAllBucketsRequest() *GetAllBucketsRequest {
@@ -79,14 +97,31 @@ func (r *GetAllBucketsRequest) Do(p *RequestParam) (Response, error) {
 		return nil, fmt.Errorf("Response StatusCode[%d] != 200", resp.StatusCode)
 	}
 
-	content, err := ioutil.ReadAll(resp.Body)
+	respBody, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("Read response body err, %v", err)
 	}
-	fmt.Printf("Response: %s\n", string(content))
+	//fmt.Printf("Response: %s\n", string(respBody))
 
-	// TODO:
-	return nil, nil
+	gabresp := &GetAllBucketsResponse{}
+	if err = xml.Unmarshal(respBody, gabresp); err != nil {
+		return nil, fmt.Errorf("Unmarshal response body err, %v", err)
+	}
+	gabresp.respBody = respBody
+
+	return gabresp, nil
+}
+
+type GetAllBucketsResponse struct {
+	XMLName xml.Name `xml:"ListAllMyBucketsResult"`
+	Owner   Owner    `xml:"Owner"`
+	Buckets Buckets  `xml:"Buckets"`
+
+	respBody []byte
+}
+
+func (r GetAllBucketsResponse) Detail() []byte {
+	return r.respBody
 }
 
 ////////////////////////////////////////////////////////////////////////
@@ -98,7 +133,7 @@ type GetBucketOption struct {
 }
 
 func DefaultGetBucketOption() *GetBucketOption {
-	return &GetBucketParam{
+	return &GetBucketOption{
 		Maxkeys: 1000,
 	}
 }
@@ -106,13 +141,13 @@ func DefaultGetBucketOption() *GetBucketOption {
 func (p GetBucketOption) String() string {
 	buf := bytes.NewBuffer(nil)
 	buf.WriteString(fmt.Sprintf("max-keys=%d", p.Maxkeys))
-	if len(Prefix) > 0 {
+	if len(p.Prefix) > 0 {
 		buf.WriteString(fmt.Sprintf("&prefix=%s", p.Prefix))
 	}
-	if len(Delimiter) > 0 {
+	if len(p.Delimiter) > 0 {
 		buf.WriteString(fmt.Sprintf("&delimiter=%s", p.Delimiter))
 	}
-	if len(Marker) > 0 {
+	if len(p.Marker) > 0 {
 		buf.WriteString(fmt.Sprintf("&marker=%s", p.Marker))
 	}
 	return buf.String()
