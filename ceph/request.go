@@ -199,12 +199,32 @@ func (r *GetBucketRequest) Do(p *RequestParam) (Response, error) {
 		return nil, fmt.Errorf("Response StatusCode[%d] != 200", resp.StatusCode)
 	}
 
-	content, err := ioutil.ReadAll(resp.Body)
+	respBody, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("Read response body err, %v", err)
 	}
-	fmt.Printf("Response: %s\n", string(content))
+	//fmt.Printf("Response: %s\n", string(respBody))
 
-	// TODO:
-	return nil, nil
+	gbresp := &GetBucketResponse{}
+	if err = xml.Unmarshal(respBody, gbresp); err != nil {
+		return nil, fmt.Errorf("Unmarshal response body err, %v", err)
+	}
+	gbresp.respBody = respBody
+
+	return gbresp, nil
+}
+
+type GetBucketResponse struct {
+	XMLName     xml.Name `xml:"ListBucketResult"`
+	Name        string   `xml:"Name"`
+	Prefix      string   `xml:"Prefix"`
+	Marker      string   `xml:"Marker"`
+	MaxKeys     uint32   `xml:"MaxKeys"`
+	IsTruncated bool     `xml:"IsTruncated"`
+
+	respBody []byte
+}
+
+func (r GetBucketResponse) Detail() []byte {
+	return r.respBody
 }

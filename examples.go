@@ -42,9 +42,8 @@ func main() {
 }
 
 func GetAllBuckets(c *ceph.Ceph) {
-	r := ceph.NewGetAllBucketsRequest()
-
-	resp, err := c.Do(r)
+	req := ceph.NewGetAllBucketsRequest()
+	resp, err := c.Do(req)
 	if err != nil {
 		log.Printf("%v\n", err)
 		return
@@ -63,12 +62,23 @@ func GetAllBuckets(c *ceph.Ceph) {
 }
 
 func GetBucket(c *ceph.Ceph) {
-	r := ceph.NewGetBucketRequest(bucket, nil)
-
-	resp, err := c.Do(r)
+	req := ceph.NewGetBucketRequest(bucket, nil)
+	resp, err := c.Do(req)
 	if err != nil {
 		log.Printf("%v\n", err)
+		return
 	}
-	_ = resp
 
+	gbresp, ok := resp.(*ceph.GetBucketResponse)
+	if !ok {
+		log.Printf("Invalid response type, type is %v", reflect.TypeOf(resp))
+		return
+	}
+
+	log.Println("GetBucket result:")
+	log.Printf("Name        : %s\n", gbresp.Name)
+	log.Printf("Prefix      : %s\n", gbresp.Prefix)
+	log.Printf("Marker      : %s\n", gbresp.Marker)
+	log.Printf("MaxKeys     : %d\n", gbresp.MaxKeys)
+	log.Printf("IsTruncated : %v\n", gbresp.IsTruncated)
 }
