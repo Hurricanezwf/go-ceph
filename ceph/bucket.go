@@ -24,7 +24,7 @@ type Response interface {
 
 ////////////////////////////////////////////////////////////
 type RequestParam struct {
-	Host      string
+	Host      string //ip:port
 	AccessKey string
 	SecretKey string
 }
@@ -165,21 +165,21 @@ type GetBucketRequest struct {
 
 // @param bucket  : bucket name
 // @param opt     : bucket option for quering, if it's nil, default will be used
-// @param validte : whether validating bucket is existed or not
-func NewGetBucketRequest(bucket string, opt *GetBucketOption, validate bool) *GetBucketRequest {
+func NewGetBucketRequest(bucket string) *GetBucketRequest {
 	r := &GetBucketRequest{
 		bucket:   bucket,
-		opt:      opt,
-		validate: validate,
-	}
-	if r.opt == nil {
-		r.opt = DefaultGetBucketOption()
+		opt:      nil,
+		validate: false,
 	}
 	return r
 }
 
 func (r *GetBucketRequest) SetOption(opt *GetBucketOption) {
 	r.opt = opt
+}
+
+func (r *GetBucketRequest) SetValidate(v bool) {
+	r.validate = v
 }
 
 func (r *GetBucketRequest) Do(p *RequestParam) (Response, error) {
@@ -191,13 +191,17 @@ func (r *GetBucketRequest) Do(p *RequestParam) (Response, error) {
 	}
 
 	if r.validate {
-		exist, err := BucketExisted(r.bucket, p)
+		result, err := NewHeadBucketRequest(r.bucket).Do(p)
 		if err != nil {
 			return nil, fmt.Errorf("Validate bucket(%s) err, %v", r.bucket, err)
 		}
-		if !exist {
+		if result.(*HeadBucketResponse).IsExisted == false {
 			return nil, ErrBucketNotExist
 		}
+	}
+
+	if r.opt == nil {
+		r.opt = DefaultGetBucketOption()
 	}
 
 	url := fmt.Sprintf("http://%s/%s?%s", p.Host, r.bucket, r.opt.UrlStr())
@@ -250,11 +254,29 @@ func (r GetBucketResponse) Detail() []byte {
 	return r.respBody
 }
 
-func BucketExisted(bucket string, p *RequestParam) (bool, error) {
-	url := fmt.Sprintf("http://%s/%s/", p.Host, bucket)
+/////////////////////////////////////////////////////////////////
+type HeadBucketRequest struct {
+	bucket string // [required]
+}
+
+func NewHeadBucketRequest(bucket string) *HeadBucketRequest {
+	return &HeadBucketRequest{
+		bucket: bucket,
+	}
+}
+
+func (r *HeadBucketRequest) Do(p *RequestParam) (Response, error) {
+	if p == nil {
+		return nil, errors.New("Nil RequestParam")
+	}
+	if err := p.Validate(); err != nil {
+		return nil, fmt.Errorf("Validate RequestParam err, %v", err)
+	}
+
+	url := fmt.Sprintf("http://%s/%s/", p.Host, r.bucket)
 	req, err := http.NewRequest("HEAD", url, nil)
 	if err != nil {
-		return false, fmt.Errorf("New http request err, %v", err)
+		return nil, fmt.Errorf("New http request err, %v", err)
 	}
 
 	req.Header.Set("Date", GMTime())
@@ -263,9 +285,25 @@ func BucketExisted(bucket string, p *RequestParam) (bool, error) {
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
 	defer resp.Body.Close()
 
-	return resp.StatusCode == 200, nil
+	hbresp := &HeadBucketResponse{}
+	hbresp.IsExisted = (resp.StatusCode == 200)
+	hbresp.respStatusCode = resp.StatusCode
+
+	return hbresp, nil
+}
+
+type HeadBucketResponse struct {
+	IsExisted bool
+
+	respStatusCode int
+}
+
+func (r HeadBucketResponse) Detail() []byte {
+	buf := bytes.NewBuffer(nil)
+	buf.WriteString(fmt.Sprintf("Response status code is %d", r.respStatusCode))
+	return buf.Bytes()
 }

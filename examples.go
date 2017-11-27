@@ -16,29 +16,37 @@ var (
 )
 
 var (
-	f      string
-	bucket string
+	f        string // 函数名
+	bucket   string // bucket名字
+	filePath string // 文件路径
+	objName  string
 )
 
+var funcMap map[string]func(c *ceph.Ceph)
+
 func init() {
+	funcMap = make(map[string]func(c *ceph.Ceph))
+	funcMap["getallbuckets"] = GetAllBuckets
+	funcMap["getbucket"] = GetBucket
+	funcMap["putobj"] = PutObj
+}
+
+func main() {
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 
 	flag.StringVar(&f, "f", "", "function name")
 	flag.StringVar(&bucket, "b", "", "bucket name")
+	flag.StringVar(&filePath, "fp", "", "file path to be put")
+	flag.StringVar(&objName, "o", "", "object name")
 	flag.Parse()
-}
 
-func main() {
-	c := ceph.NewCeph(IP, Port, AccessKey, SecretKey)
-
-	switch f {
-	case "getallbuckets":
-		GetAllBuckets(c)
-	case "getbucket":
-		GetBucket(c)
-	default:
+	fc, ok := funcMap[f]
+	if !ok {
 		log.Printf("Unknown function name %s\n", f)
+		return
 	}
+
+	fc(ceph.NewCeph(IP, Port, AccessKey, SecretKey))
 }
 
 func GetAllBuckets(c *ceph.Ceph) {
@@ -62,7 +70,9 @@ func GetAllBuckets(c *ceph.Ceph) {
 }
 
 func GetBucket(c *ceph.Ceph) {
-	req := ceph.NewGetBucketRequest(bucket, nil, true)
+	req := ceph.NewGetBucketRequest(bucket)
+	//req.SetOption(nil)
+	req.SetValidate(true)
 	resp, err := c.Do(req)
 	if err != nil {
 		log.Printf("%v\n", err)
@@ -81,4 +91,14 @@ func GetBucket(c *ceph.Ceph) {
 	log.Printf("Marker      : %s\n", gbresp.Marker)
 	log.Printf("MaxKeys     : %d\n", gbresp.MaxKeys)
 	log.Printf("IsTruncated : %v\n", gbresp.IsTruncated)
+}
+
+func PutObj(c *ceph.Ceph) {
+	req := ceph.NewPutObjRequest(bucket, objName, filePath)
+	resp, err := c.Do(req)
+	if err != nil {
+		log.Printf("%v\n", err)
+		return
+	}
+	_ = resp
 }
