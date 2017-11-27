@@ -10,6 +10,10 @@ import (
 	"net/http"
 )
 
+var (
+	ErrBucketNotExist = errors.New("Bucket not exist")
+)
+
 type Request interface {
 	Do(p *RequestParam) (Response, error)
 }
@@ -71,7 +75,6 @@ func (r *GetAllBucketsRequest) Do(p *RequestParam) (Response, error) {
 	if p == nil {
 		return nil, errors.New("Nil RequestParam")
 	}
-
 	if err := p.Validate(); err != nil {
 		return nil, fmt.Errorf("Validate RequestParam err, %v", err)
 	}
@@ -86,8 +89,7 @@ func (r *GetAllBucketsRequest) Do(p *RequestParam) (Response, error) {
 	req.Header.Set("Accept-Encoding", "identity")
 	req.Header.Set("Authorization", fmt.Sprintf("%s %s:%s", "AWS", p.AccessKey, Signature(p.SecretKey, req)))
 
-	c := http.Client{}
-	resp, err := c.Do(req)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -138,7 +140,7 @@ func DefaultGetBucketOption() *GetBucketOption {
 	}
 }
 
-func (p GetBucketOption) String() string {
+func (p GetBucketOption) UrlStr() string {
 	buf := bytes.NewBuffer(nil)
 	buf.WriteString(fmt.Sprintf("max-keys=%d", p.Maxkeys))
 	if len(p.Prefix) > 0 {
@@ -156,13 +158,24 @@ func (p GetBucketOption) String() string {
 type GetBucketRequest struct {
 	bucket string           // [required]
 	opt    *GetBucketOption // [optional]
+
+	// validate check if bucket is existed before getting, default is false
+	validate bool
 }
 
-func NewGetBucketRequest(bucket string, opt *GetBucketOption) *GetBucketRequest {
-	return &GetBucketRequest{
-		bucket: bucket,
-		opt:    opt,
+// @param bucket  : bucket name
+// @param opt     : bucket option for quering, if it's nil, default will be used
+// @param validte : whether validating bucket is existed or not
+func NewGetBucketRequest(bucket string, opt *GetBucketOption, validate bool) *GetBucketRequest {
+	r := &GetBucketRequest{
+		bucket:   bucket,
+		opt:      opt,
+		validate: validate,
 	}
+	if r.opt == nil {
+		r.opt = DefaultGetBucketOption()
+	}
+	return r
 }
 
 func (r *GetBucketRequest) SetOption(opt *GetBucketOption) {
@@ -173,12 +186,21 @@ func (r *GetBucketRequest) Do(p *RequestParam) (Response, error) {
 	if p == nil {
 		return nil, errors.New("Nil RequestParam")
 	}
-
 	if err := p.Validate(); err != nil {
 		return nil, fmt.Errorf("Validate RequestParam err, %v", err)
 	}
 
-	url := fmt.Sprintf("http://%s/%s?%s", p.Host, r.bucket, r.opt)
+	if r.validate {
+		exist, err := BucketExisted(r.bucket, p)
+		if err != nil {
+			return nil, fmt.Errorf("Validate bucket(%s) err, %v", r.bucket, err)
+		}
+		if !exist {
+			return nil, ErrBucketNotExist
+		}
+	}
+
+	url := fmt.Sprintf("http://%s/%s?%s", p.Host, r.bucket, r.opt.UrlStr())
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("New http request err, %v", err)
@@ -188,8 +210,7 @@ func (r *GetBucketRequest) Do(p *RequestParam) (Response, error) {
 	req.Header.Set("Accept-Encoding", "identity")
 	req.Header.Set("Authorization", fmt.Sprintf("%s %s:%s", "AWS", p.AccessKey, Signature(p.SecretKey, req)))
 
-	c := http.Client{}
-	resp, err := c.Do(req)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -227,4 +248,24 @@ type GetBucketResponse struct {
 
 func (r GetBucketResponse) Detail() []byte {
 	return r.respBody
+}
+
+func BucketExisted(bucket string, p *RequestParam) (bool, error) {
+	url := fmt.Sprintf("http://%s/%s/", p.Host, bucket)
+	req, err := http.NewRequest("HEAD", url, nil)
+	if err != nil {
+		return false, fmt.Errorf("New http request err, %v", err)
+	}
+
+	req.Header.Set("Date", GMTime())
+	req.Header.Set("Accept-Encoding", "identity")
+	req.Header.Set("Authorization", fmt.Sprintf("%s %s:%s", "AWS", p.AccessKey, Signature(p.SecretKey, req)))
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return false, err
+	}
+	defer resp.Body.Close()
+
+	return resp.StatusCode == 200, nil
 }

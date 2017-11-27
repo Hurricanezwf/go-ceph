@@ -62,7 +62,7 @@ func GetAllBuckets(c *ceph.Ceph) {
 }
 
 func GetBucket(c *ceph.Ceph) {
-	req := ceph.NewGetBucketRequest(bucket, nil)
+	req := ceph.NewGetBucketRequest(bucket, nil, true)
 	resp, err := c.Do(req)
 	if err != nil {
 		log.Printf("%v\n", err)
