@@ -35,7 +35,7 @@ func (c *Ceph) SetSecretKey(k string) {
 	c.SecretKey = k
 }
 
-func (c *Ceph) Do(r Request) (Response, error) {
+func (c *Ceph) Do(r Request) Response {
 	p := &RequestParam{
 		Host:      fmt.Sprintf("%s:%d", c.IP, c.Port),
 		AccessKey: c.AccessKey,

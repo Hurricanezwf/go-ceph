@@ -6,10 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"net"
 	"net/http"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -27,35 +29,43 @@ func NewPutObjRequest(bucket, objName, filePath string) *PutObjRequest {
 	}
 }
 
-func (r *PutObjRequest) Do(p *RequestParam) (Response, error) {
+func (r *PutObjRequest) Do(p *RequestParam) Response {
+	var poresp = &PutObjResponse{}
+
+	// 参数校验
 	if p == nil {
-		return nil, errors.New("Nil RequestParam")
+		poresp.err = errors.New("Nil RequestParam")
+		return poresp
 	}
 	if err := p.Validate(); err != nil {
-		return nil, fmt.Errorf("Validate RequestParam err, %v", err)
+		poresp.err = fmt.Errorf("Validate RequestParam err, %v", err)
+		return poresp
 	}
 
+	// 计算文件大小和md5
 	f, err := os.Open(r.filePath)
 	if err != nil {
-		return nil, fmt.Errorf("Open %s err, %v", r.filePath, err)
+		poresp.err = fmt.Errorf("Open %s err, %v", r.filePath, err)
+		return poresp
 	}
 	defer f.Close()
 
 	stat, _ := f.Stat()
 	fileSize := stat.Size()
-	//fileName := filepath.Base(r.filePath)
 
-	f.Seek(0, os.SEEK_SET)
 	md5, err := Base64MD5(f)
 	if err != nil {
-		return nil, fmt.Errorf("Cal %s md5 err, %v", r.filePath, err)
+		poresp.err = fmt.Errorf("Cal %s md5 err, %v", r.filePath, err)
+		return poresp
 	}
 
-	// for generate signature
+	// 发送请求
+	// 新建一个http.Request是为了生成签名用
 	url := fmt.Sprintf("http://%s/%s/%s", p.Host, r.bucket, r.objName)
 	req, err := http.NewRequest("PUT", url, nil)
 	if err != nil {
-		return nil, fmt.Errorf("New http request err, %v", err)
+		poresp.err = fmt.Errorf("New http request err, %v", err)
+		return poresp
 	}
 	req.Header.Set("Date", GMTime())
 	req.Header.Set("Content-Type", "binary/octet-stream")
@@ -77,22 +87,23 @@ func (r *PutObjRequest) Do(p *RequestParam) (Response, error) {
 	// 新建到ceph的tcp连接
 	conn, err := net.DialTimeout("tcp", p.Host, 5*time.Second)
 	if err != nil {
-		return nil, fmt.Errorf("Dial %s err, %v", p.Host, err)
+		poresp.err = fmt.Errorf("Dial %s err, %v", p.Host, err)
+		return poresp
 	}
 	defer conn.Close()
 
 	var (
-		notifyErrC = make(chan error, 3)
+		notifyErrC = make(chan error, 2)
 		respBufC   = make(chan *http.Response, 1)
 		writeDoneC = make(chan struct{})
-		stopped    bool
+		stopped    = int32(0)
 		wg         sync.WaitGroup
 	)
 
 	defer func() {
+		close(notifyErrC)
 		close(respBufC)
 		close(writeDoneC)
-		close(notifyErrC)
 	}()
 
 	// 读取返回, 因为对方发送完回复后会立刻关闭连接，所以必须在对方发送的时候保证有读操作
@@ -105,7 +116,7 @@ func (r *PutObjRequest) Do(p *RequestParam) (Response, error) {
 
 		respReader := bufio.NewReader(conn)
 		for {
-			if stopped == true {
+			if atomic.LoadInt32(&stopped) > int32(0) {
 				break
 			}
 			conn.SetReadDeadline(time.Now().Add(time.Second))
@@ -119,10 +130,11 @@ func (r *PutObjRequest) Do(p *RequestParam) (Response, error) {
 			} else {
 				respBufC <- resp
 			}
-			time.Sleep(time.Second)
+			time.Sleep(100 * time.Millisecond)
 		}
 	}(&wg)
 
+	// 发送请求
 	go func(w *sync.WaitGroup) {
 		w.Add(1)
 		defer func() {
@@ -135,7 +147,6 @@ func (r *PutObjRequest) Do(p *RequestParam) (Response, error) {
 			notifyErrC <- fmt.Errorf("Write http header err, %v", err)
 			return
 		}
-		//fmt.Printf(buf.String())
 
 		// 写body内容
 		f.Seek(0, os.SEEK_SET)
@@ -158,17 +169,15 @@ func (r *PutObjRequest) Do(p *RequestParam) (Response, error) {
 				notifyErrC <- fmt.Errorf("Send err, %v", err)
 				return
 			}
-			//fmt.Printf(string(chunk[:n]))
 		}
 		if _, err = conn.Write([]byte("\r\n")); err != nil {
 			notifyErrC <- fmt.Errorf("Send err, %v", err)
 			return
 		}
-		//fmt.Printf("\r\n")
 	}(&wg)
 
+	// 解析返回
 	var (
-		retErr  error
 		resp    *http.Response
 		loop    = true
 		timeout = time.NewTimer(100 * 365 * 24 * time.Hour)
@@ -176,132 +185,53 @@ func (r *PutObjRequest) Do(p *RequestParam) (Response, error) {
 
 	for loop {
 		select {
-		case retErr = <-notifyErrC:
+		case poresp.err = <-notifyErrC:
 			loop = false
 		case <-writeDoneC:
 			timeout.Reset(5 * time.Second)
 			// don't stop loop
 		case <-timeout.C:
-			retErr = errors.New("Read response timeout")
+			poresp.err = errors.New("Read response timeout")
 			loop = false
 		case resp = <-respBufC:
-			fmt.Printf("Response: code: %d, len:%d\n", resp.StatusCode, resp.ContentLength)
-			loop = false
-		}
-	}
-
-	stopped = true
-	wg.Wait()
-
-	fmt.Printf("Err: %v\n", retErr)
-	/*
-		url := fmt.Sprintf("http://%s/%s/%s", p.Host, r.bucket, fileName)
-		req, err := http.NewRequest("PUT", url, nil)
-		if err != nil {
-			return nil, fmt.Errorf("New http request err, %v", err)
-		}
-
-		buf := bytes.NewBuffer(nil)
-		buf.WriteString("hello")
-		req.Body = ioutil.NopCloser(buf)
-		req.ContentLength = fileSize
-
-		req.Header.Set("Date", GMTime())
-		req.Header.Set("Accept-Encoding", "identity")
-		req.Header.Set("Content-Type", "binary/octet-stream")
-		req.Header.Set("Content-MD5", md5)
-		//req.Header.Set("Content-Length", "5")
-		//req.Header.Set("Content-Length", "-1")
-		req.Header.Set("Authorization", fmt.Sprintf("%s %s:%s", "AWS", p.AccessKey, Signature(p.SecretKey, req)))
-
-	*/
-
-	/*
-		header := bytes.NewBuffer(nil)
-		if err = req.Write(header); err != nil {
-			return nil, err
-		}
-
-		tcpConn, err := net.Dial("tcp", p.Host)
-		if err != nil {
-			return nil, fmt.Errorf("Connect to ceph(%s) err, %v", p.Host, err)
-		}
-		defer tcpConn.Close()
-
-		// 向tcp连接写入http头
-		if _, err = tcpConn.Write(header.Bytes()); err != nil {
-			return nil, fmt.Errorf("Write http header err, %v", err)
-		}
-		fmt.Printf("%s", header.String())
-
-		f.Seek(0, os.SEEK_SET)
-		body := bytes.NewBuffer(nil)
-		for {
-			chunk := make([]byte, 8192)
-			body.Reset()
-
-			n, err := f.Read(chunk)
-			if err != nil {
-				if err != io.EOF {
-					return nil, fmt.Errorf("Read file %s err, %v", r.filePath, err)
-				}
+			if resp.StatusCode < 200 {
+				// continue receive
 				break
 			}
 
-			//body.WriteString(fmt.Sprintf("%d\r\n", n))
-			body.Write(chunk[:n])
-			//body.WriteString("\r\n")
-			if _, err = tcpConn.Write(body.Bytes()); err != nil {
-				return nil, fmt.Errorf("Send chunk err, %v", err)
+			loop = false
+
+			respBody, err := ioutil.ReadAll(resp.Body)
+			if err != nil {
+				poresp.err = fmt.Errorf("Read response body err, %v", err)
+				break
 			}
-			fmt.Printf("%s", body.String())
+
+			if resp.StatusCode != 200 {
+				poresp.err = errors.New(string(respBody))
+				break
+			}
+
+			poresp.ETag = resp.Header.Get("ETag")
 		}
 
-		//endOfChunk := []byte("0\r\n\r\n")
-		//if _, err = tcpConn.Write(endOfChunk); err != nil {
-		//	return nil, fmt.Errorf("Send end of chunk err, %v", err)
-		//}
-		//fmt.Printf("%s", string(endOfChunk))
-
-		resp := make([]byte, 1024)
-		n, err := tcpConn.Read(resp)
-		if err != nil {
-			return nil, fmt.Errorf("Read http response err, %v", err)
+		if resp != nil {
+			resp.Body.Close()
 		}
-		_ = resp
-		_ = n
-		fmt.Printf("%s\n", string(resp[:n]))
-	*/
+	}
 
-	/*
-		buf := bytes.NewBuffer(nil)
-		f.Seek(0, os.SEEK_SET)
-		if _, err = io.Copy(buf, f); err != nil {
-			return nil, fmt.Errorf("Copy file content to buffer err, %v", err)
-		}
-		req.Body = ioutil.NopCloser(buf)
-		req.ContentLength = int64(buf.Len())
-	*/
+	atomic.AddInt32(&stopped, int32(1))
+	wg.Wait()
 
-	/*
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			return nil, fmt.Errorf("Execute request err, %v", err)
-		}
-		defer resp.Body.Close()
+	return poresp
+}
 
-		respBody, err := ioutil.ReadAll(resp.Body)
-		if err != nil {
-			return nil, fmt.Errorf("Read response body err, %v", err)
-		}
-		_ = respBody
-		fmt.Printf("%s\n", respBody)
+type PutObjResponse struct {
+	ETag string
 
-		if resp.StatusCode >= 300 {
-			return nil, fmt.Errorf("Response StatusCode[%d] >= 300", resp.StatusCode)
-		}
-	*/
+	err error
+}
 
-	// TODO:
-	return nil, nil
+func (r PutObjResponse) Err() error {
+	return r.err
 }

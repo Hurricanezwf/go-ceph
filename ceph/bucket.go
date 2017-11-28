@@ -15,11 +15,11 @@ var (
 )
 
 type Request interface {
-	Do(p *RequestParam) (Response, error)
+	Do(p *RequestParam) Response
 }
 
 type Response interface {
-	Detail() []byte
+	Err() error
 }
 
 ////////////////////////////////////////////////////////////
@@ -71,18 +71,25 @@ func NewGetAllBucketsRequest() *GetAllBucketsRequest {
 	return &GetAllBucketsRequest{}
 }
 
-func (r *GetAllBucketsRequest) Do(p *RequestParam) (Response, error) {
+func (r *GetAllBucketsRequest) Do(p *RequestParam) Response {
+	var gabresp = &GetAllBucketsResponse{}
+
+	// 参数校验
 	if p == nil {
-		return nil, errors.New("Nil RequestParam")
+		gabresp.err = errors.New("Nil RequestParam")
+		return gabresp
 	}
 	if err := p.Validate(); err != nil {
-		return nil, fmt.Errorf("Validate RequestParam err, %v", err)
+		gabresp.err = fmt.Errorf("Validate RequestParam err, %v", err)
+		return gabresp
 	}
 
+	// 发送请求
 	url := fmt.Sprintf("http://%s/", p.Host)
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
-		return nil, fmt.Errorf("New http request err, %v", err)
+		gabresp.err = fmt.Errorf("New http request err, %v", err)
+		return gabresp
 	}
 
 	req.Header.Set("Date", GMTime())
@@ -91,27 +98,29 @@ func (r *GetAllBucketsRequest) Do(p *RequestParam) (Response, error) {
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return nil, err
+		gabresp.err = fmt.Errorf("Do request err, %v", err)
+		return gabresp
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("Response StatusCode[%d] != 200", resp.StatusCode)
-	}
-
+	// 解析响应
 	respBody, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("Read response body err, %v", err)
+		gabresp.err = fmt.Errorf("Read response body err, %v", err)
+		return gabresp
 	}
-	//fmt.Printf("Response: %s\n", string(respBody))
 
-	gabresp := &GetAllBucketsResponse{}
+	if resp.StatusCode != 200 {
+		gabresp.err = errors.New(string(respBody))
+		return gabresp
+	}
+
 	if err = xml.Unmarshal(respBody, gabresp); err != nil {
-		return nil, fmt.Errorf("Unmarshal response body err, %v", err)
+		gabresp.err = fmt.Errorf("Unmarshal response body err, %v", err)
+		return gabresp
 	}
-	gabresp.respBody = respBody
 
-	return gabresp, nil
+	return gabresp
 }
 
 type GetAllBucketsResponse struct {
@@ -119,11 +128,11 @@ type GetAllBucketsResponse struct {
 	Owner   Owner    `xml:"Owner"`
 	Buckets Buckets  `xml:"Buckets"`
 
-	respBody []byte
+	err error
 }
 
-func (r GetAllBucketsResponse) Detail() []byte {
-	return r.respBody
+func (r GetAllBucketsResponse) Err() error {
+	return r.err
 }
 
 ////////////////////////////////////////////////////////////////////////
@@ -163,8 +172,6 @@ type GetBucketRequest struct {
 	validate bool
 }
 
-// @param bucket  : bucket name
-// @param opt     : bucket option for quering, if it's nil, default will be used
 func NewGetBucketRequest(bucket string) *GetBucketRequest {
 	r := &GetBucketRequest{
 		bucket:   bucket,
@@ -182,21 +189,29 @@ func (r *GetBucketRequest) SetValidate(v bool) {
 	r.validate = v
 }
 
-func (r *GetBucketRequest) Do(p *RequestParam) (Response, error) {
+func (r *GetBucketRequest) Do(p *RequestParam) Response {
+	var gbresp = &GetBucketResponse{}
+
+	// 参数校验
 	if p == nil {
-		return nil, errors.New("Nil RequestParam")
+		gbresp.err = errors.New("Nil RequestParam")
+		return gbresp
 	}
 	if err := p.Validate(); err != nil {
-		return nil, fmt.Errorf("Validate RequestParam err, %v", err)
+		gbresp.err = fmt.Errorf("Validate RequestParam err, %v", err)
+		return gbresp
 	}
 
+	// 验证bucket是否存在
 	if r.validate {
-		result, err := NewHeadBucketRequest(r.bucket).Do(p)
-		if err != nil {
-			return nil, fmt.Errorf("Validate bucket(%s) err, %v", r.bucket, err)
+		result := NewHeadBucketRequest(r.bucket).Do(p)
+		if err := result.Err(); err != nil {
+			gbresp.err = fmt.Errorf("Validate bucket(%s) err, %v", r.bucket, err)
+			return gbresp
 		}
 		if result.(*HeadBucketResponse).IsExisted == false {
-			return nil, ErrBucketNotExist
+			gbresp.err = ErrBucketNotExist
+			return gbresp
 		}
 	}
 
@@ -204,10 +219,12 @@ func (r *GetBucketRequest) Do(p *RequestParam) (Response, error) {
 		r.opt = DefaultGetBucketOption()
 	}
 
+	// 请求获取
 	url := fmt.Sprintf("http://%s/%s?%s", p.Host, r.bucket, r.opt.UrlStr())
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
-		return nil, fmt.Errorf("New http request err, %v", err)
+		gbresp.err = fmt.Errorf("New http request err, %v", err)
+		return gbresp
 	}
 
 	req.Header.Set("Date", GMTime())
@@ -216,27 +233,29 @@ func (r *GetBucketRequest) Do(p *RequestParam) (Response, error) {
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return nil, err
+		gbresp.err = fmt.Errorf("Do request err, %v", err)
+		return gbresp
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("Response StatusCode[%d] != 200", resp.StatusCode)
-	}
-
+	// 解析响应
 	respBody, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("Read response body err, %v", err)
+		gbresp.err = fmt.Errorf("Read response body err, %v", err)
+		return gbresp
 	}
 	//fmt.Printf("Response: %s\n", string(respBody))
 
-	gbresp := &GetBucketResponse{}
-	if err = xml.Unmarshal(respBody, gbresp); err != nil {
-		return nil, fmt.Errorf("Unmarshal response body err, %v", err)
+	if resp.StatusCode != 200 {
+		gbresp.err = errors.New(string(respBody))
+		return gbresp
 	}
-	gbresp.respBody = respBody
 
-	return gbresp, nil
+	if err = xml.Unmarshal(respBody, gbresp); err != nil {
+		gbresp.err = fmt.Errorf("Unmarshal response body err, %v", err)
+		return gbresp
+	}
+	return gbresp
 }
 
 type GetBucketResponse struct {
@@ -247,11 +266,11 @@ type GetBucketResponse struct {
 	MaxKeys     uint32   `xml:"MaxKeys"`
 	IsTruncated bool     `xml:"IsTruncated"`
 
-	respBody []byte
+	err error
 }
 
-func (r GetBucketResponse) Detail() []byte {
-	return r.respBody
+func (r GetBucketResponse) Err() error {
+	return r.err
 }
 
 /////////////////////////////////////////////////////////////////
@@ -265,18 +284,25 @@ func NewHeadBucketRequest(bucket string) *HeadBucketRequest {
 	}
 }
 
-func (r *HeadBucketRequest) Do(p *RequestParam) (Response, error) {
+func (r *HeadBucketRequest) Do(p *RequestParam) Response {
+	var hbresp = &HeadBucketResponse{}
+
+	// 参数校验
 	if p == nil {
-		return nil, errors.New("Nil RequestParam")
+		hbresp.err = errors.New("Nil RequestParam")
+		return hbresp
 	}
 	if err := p.Validate(); err != nil {
-		return nil, fmt.Errorf("Validate RequestParam err, %v", err)
+		hbresp.err = fmt.Errorf("Validate RequestParam err, %v", err)
+		return hbresp
 	}
 
+	// 发送请求
 	url := fmt.Sprintf("http://%s/%s/", p.Host, r.bucket)
 	req, err := http.NewRequest("HEAD", url, nil)
 	if err != nil {
-		return nil, fmt.Errorf("New http request err, %v", err)
+		hbresp.err = fmt.Errorf("New http request err, %v", err)
+		return hbresp
 	}
 
 	req.Header.Set("Date", GMTime())
@@ -285,25 +311,21 @@ func (r *HeadBucketRequest) Do(p *RequestParam) (Response, error) {
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return nil, err
+		hbresp.err = fmt.Errorf("Do request err, %v", err)
+		return hbresp
 	}
 	defer resp.Body.Close()
 
-	hbresp := &HeadBucketResponse{}
 	hbresp.IsExisted = (resp.StatusCode == 200)
-	hbresp.respStatusCode = resp.StatusCode
-
-	return hbresp, nil
+	return hbresp
 }
 
 type HeadBucketResponse struct {
 	IsExisted bool
 
-	respStatusCode int
+	err error
 }
 
-func (r HeadBucketResponse) Detail() []byte {
-	buf := bytes.NewBuffer(nil)
-	buf.WriteString(fmt.Sprintf("Response status code is %d", r.respStatusCode))
-	return buf.Bytes()
+func (r HeadBucketResponse) Err() error {
+	return r.err
 }

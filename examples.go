@@ -4,6 +4,7 @@ import (
 	"flag"
 	"log"
 	"reflect"
+	"time"
 
 	"github.com/Hurricanezwf/go-ceph/ceph"
 )
@@ -51,8 +52,8 @@ func main() {
 
 func GetAllBuckets(c *ceph.Ceph) {
 	req := ceph.NewGetAllBucketsRequest()
-	resp, err := c.Do(req)
-	if err != nil {
+	resp := c.Do(req)
+	if err := resp.Err(); err != nil {
 		log.Printf("%v\n", err)
 		return
 	}
@@ -73,8 +74,8 @@ func GetBucket(c *ceph.Ceph) {
 	req := ceph.NewGetBucketRequest(bucket)
 	//req.SetOption(nil)
 	req.SetValidate(true)
-	resp, err := c.Do(req)
-	if err != nil {
+	resp := c.Do(req)
+	if err := resp.Err(); err != nil {
 		log.Printf("%v\n", err)
 		return
 	}
@@ -94,11 +95,19 @@ func GetBucket(c *ceph.Ceph) {
 }
 
 func PutObj(c *ceph.Ceph) {
+	start := time.Now()
 	req := ceph.NewPutObjRequest(bucket, objName, filePath)
-	resp, err := c.Do(req)
-	if err != nil {
+	resp := c.Do(req)
+	if err := resp.Err(); err != nil {
 		log.Printf("%v\n", err)
 		return
 	}
-	_ = resp
+
+	poresp, ok := resp.(*ceph.PutObjResponse)
+	if !ok {
+		log.Printf("Invalid response type, type is %v", reflect.TypeOf(resp))
+		return
+	}
+
+	log.Printf("PubObj done, etag: %s, elapse: %v\n", poresp.ETag, time.Since(start))
 }

@@ -21,6 +21,8 @@ func Base64MD5(f *os.File) (string, error) {
 		return "", errors.New("Bad file")
 	}
 
+	f.Seek(0, os.SEEK_SET)
+
 	h := md5.New()
 	if _, err := io.Copy(h, f); err != nil {
 		return "", err
