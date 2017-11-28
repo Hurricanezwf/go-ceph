@@ -626,7 +626,6 @@ func GenDownloadUrl(bucket, objName string, p *RequestParam, signed bool, expire
 
 	if signed {
 		expiredStr := fmt.Sprintf("%d", time.Now().Add(time.Duration(expired)*time.Second).Unix())
-		expiredStr = "1511865725"
 		req, _ := http.NewRequest("GET", path, nil)
 		req.Header.Set("Expires", expiredStr)
 
