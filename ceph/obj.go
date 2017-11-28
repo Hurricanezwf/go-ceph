@@ -10,15 +10,29 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+)
+
+const (
+	TypeByURL  = 1
+	TypeByName = 2
 )
 
 type PutObjRequest struct {
 	bucket   string // [required]
 	objName  string // [required]
 	filePath string // [required]
+
+	// 是否生成下载url,如果为true，则生成带认证的下载链接返回
+	// 默认不生成
+	genUrl  bool
+	signed  bool
+	expired int64
 }
 
 func NewPutObjRequest(bucket, objName, filePath string) *PutObjRequest {
@@ -27,6 +41,20 @@ func NewPutObjRequest(bucket, objName, filePath string) *PutObjRequest {
 		objName:  objName,
 		filePath: filePath,
 	}
+}
+
+// @param signed  : 是否在URL中生成签名
+// @param expired : 下载链接有效时间，单位秒
+func (r *PutObjRequest) EnableGenDownloadUrl(signed bool, expired int64) {
+	r.genUrl = true
+	r.signed = signed
+	r.expired = expired
+}
+
+func (r *PutObjRequest) DisableGenDownloadUrl() {
+	r.genUrl = false
+	r.signed = false
+	r.expired = 0
 }
 
 func (r *PutObjRequest) Do(p *RequestParam) Response {
@@ -42,7 +70,7 @@ func (r *PutObjRequest) Do(p *RequestParam) Response {
 		return poresp
 	}
 
-	// 计算文件大小和md5
+	// 计算文件大小和base64(md5)
 	f, err := os.Open(r.filePath)
 	if err != nil {
 		poresp.err = fmt.Errorf("Open %s err, %v", r.filePath, err)
@@ -212,7 +240,11 @@ func (r *PutObjRequest) Do(p *RequestParam) Response {
 				break
 			}
 
-			poresp.ETag = resp.Header.Get("ETag")
+			poresp.ETag = strings.Trim(resp.Header.Get("ETag"), "\"")
+			poresp.Base64Md5 = md5
+			if r.genUrl {
+				poresp.DownloadUrl = GenDownloadUrl(r.bucket, r.objName, p, r.signed, r.expired)
+			}
 		}
 
 		if resp != nil {
@@ -227,11 +259,343 @@ func (r *PutObjRequest) Do(p *RequestParam) Response {
 }
 
 type PutObjResponse struct {
-	ETag string
+	ETag        string
+	Base64Md5   string
+	DownloadUrl string
 
 	err error
 }
 
 func (r PutObjResponse) Err() error {
+	return r.err
+}
+
+//////////////////////////////////////////////////////////////////
+type GetObjRequest struct {
+	tp int
+
+	// 当TypeByURL时必须
+	url string
+
+	// 当tp==TypeByName时必须
+	bucket  string
+	objName string
+
+	// 下载的文件保存的位置
+	savePath string
+
+	// 可选参数, 如果长度大于0，则下载完成后进行验证
+	// base64(md5)的值
+	base64Md5 string
+
+	// 内部使用
+	objSize int64
+}
+
+func NewGetObjRequest(bucket, objName, savePath string) *GetObjRequest {
+	return &GetObjRequest{
+		tp:       TypeByName,
+		bucket:   bucket,
+		objName:  objName,
+		savePath: savePath,
+	}
+}
+
+func NewGetObjByUrlRequest(url, savePath string) *GetObjRequest {
+	return &GetObjRequest{
+		tp:       TypeByURL,
+		url:      url,
+		savePath: savePath,
+	}
+}
+
+func (r *GetObjRequest) SetBase64Md5(v string) {
+	r.base64Md5 = v
+}
+
+func (r *GetObjRequest) Do(p *RequestParam) Response {
+	var goresp = &GetObjResponse{}
+
+	// 参数校验
+	if p == nil {
+		goresp.err = errors.New("Nil RequestParam")
+		return goresp
+	}
+	if err := p.Validate(); err != nil {
+		goresp.err = fmt.Errorf("Validate RequestParam err, %v", err)
+		return goresp
+	}
+
+	switch r.tp {
+	case TypeByURL:
+		return r.getByURL(p)
+	case TypeByName:
+		return r.getByName(p)
+	default:
+		goresp.err = fmt.Errorf("Unknown get obj type %d", r.tp)
+		return goresp
+	}
+
+	return goresp
+}
+
+func (r *GetObjRequest) getByURL(p *RequestParam) Response {
+	var goresp = &GetObjResponse{}
+
+	// 获取对象信息
+	getInfoReq := NewGetObjInfoByUrlRequest(r.url)
+	getInfoResp := getInfoReq.Do(p)
+	if err := getInfoResp.Err(); err != nil {
+		goresp.err = fmt.Errorf("Get object info err, %v", err)
+		return goresp
+	}
+	r.objSize = getInfoResp.(*GetObjInfoResponse).Size
+
+	// 发送获取对象请求
+	req, err := http.NewRequest("GET", r.url, nil)
+	if err != nil {
+		goresp.err = fmt.Errorf("New http request err, %v", err)
+		return goresp
+	}
+
+	req.Header.Set("Date", GMTime())
+	req.Header.Set("Accept-Encoding", "identity")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		goresp.err = fmt.Errorf("Do request err, %v", err)
+		return goresp
+	}
+	defer resp.Body.Close()
+
+	// 保存对象文件到本地
+	if err = r.save(r.savePath, resp.Body); err != nil {
+		goresp.err = err
+	}
+	return goresp
+}
+
+func (r *GetObjRequest) getByName(p *RequestParam) Response {
+	var goresp = &GetObjResponse{}
+
+	// 获取对象信息
+	getInfoReq := NewGetObjInfoRequest(r.bucket, r.objName)
+	getInfoResp := getInfoReq.Do(p)
+	if err := getInfoResp.Err(); err != nil {
+		goresp.err = fmt.Errorf("Get object info err, %v", err)
+		return goresp
+	}
+	r.objSize = getInfoResp.(*GetObjInfoResponse).Size
+
+	// 发送获取对象请求
+	url := fmt.Sprintf("http://%s/%s/%s", p.Host, r.bucket, r.objName)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		goresp.err = fmt.Errorf("New http request err, %v", err)
+		return goresp
+	}
+
+	req.Header.Set("Date", GMTime())
+	req.Header.Set("Accept-Encoding", "identity")
+	req.Header.Set("Authorization", fmt.Sprintf("%s %s:%s", "AWS", p.AccessKey, Signature(p.SecretKey, req)))
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		goresp.err = fmt.Errorf("Do request err, %v", err)
+		return goresp
+	}
+	defer resp.Body.Close()
+
+	// 保存对象文件到本地
+	if err = r.save(r.savePath, resp.Body); err != nil {
+		goresp.err = err
+	}
+	return goresp
+}
+
+func (r *GetObjRequest) save(savePath string, src io.Reader) error {
+	savePath, _ = filepath.Abs(savePath)
+	tmpPath := r.savePath + ".download"
+
+	saveErr := func() error {
+		f, err := os.OpenFile(tmpPath, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0644)
+		if err != nil {
+			return fmt.Errorf("Open file %s err, %v", tmpPath, err)
+		}
+		defer f.Close()
+
+		written, err := io.Copy(f, src)
+		if err != nil {
+			return fmt.Errorf("Write file content err, %v", err)
+		}
+
+		if written != r.objSize {
+			return fmt.Errorf("Loss of data during writing, %d bytes written, %d is needed", written, r.objSize)
+		}
+
+		if err = f.Sync(); err != nil {
+			return fmt.Errorf("Sync object to file err, %v", err)
+		}
+
+		if len(r.base64Md5) > 0 {
+			b64Md5, err := Base64MD5(f)
+			if err != nil {
+				return fmt.Errorf("Cal Base64MD5 err, %v", err)
+			}
+			if b64Md5 != r.base64Md5 {
+				return errors.New("Base64Md5 not equal")
+			}
+		}
+
+		if err = os.Rename(tmpPath, r.savePath); err != nil {
+			return fmt.Errorf("Rename file err, %v", err)
+		}
+		return nil
+	}()
+
+	if saveErr != nil {
+		os.Remove(tmpPath)
+	}
+	return saveErr
+}
+
+type GetObjResponse struct {
+	err error
+}
+
+func (r GetObjResponse) Err() error {
+	return r.err
+}
+
+//////////////////////////////////////////////////////////////
+type GetObjInfoRequest struct {
+	tp int
+
+	// 当tp==TypeByURL时必须
+	url string
+
+	// 当tp==TypeByName时必须
+	bucket  string
+	objName string
+}
+
+func NewGetObjInfoRequest(bucket, objName string) *GetObjInfoRequest {
+	return &GetObjInfoRequest{
+		tp:      TypeByName,
+		bucket:  bucket,
+		objName: objName,
+	}
+}
+
+func NewGetObjInfoByUrlRequest(url string) *GetObjInfoRequest {
+	return &GetObjInfoRequest{
+		tp:  TypeByURL,
+		url: url,
+	}
+}
+
+func (r *GetObjInfoRequest) Do(p *RequestParam) Response {
+	var goiresp = &GetObjInfoResponse{}
+
+	// 参数校验
+	if p == nil {
+		goiresp.err = errors.New("Nil RequestParam")
+		return goiresp
+	}
+	if err := p.Validate(); err != nil {
+		goiresp.err = fmt.Errorf("Validate RequestParam err, %v", err)
+		return goiresp
+	}
+
+	switch r.tp {
+	case TypeByName:
+		return r.getByName(p)
+	case TypeByURL:
+		return r.getByURL(p)
+	default:
+		goiresp.err = fmt.Errorf("Unknown get object info type %d", r.tp)
+		return goiresp
+	}
+
+	return goiresp
+}
+
+func (r *GetObjInfoRequest) getByURL(p *RequestParam) Response {
+	var goiresp = &GetObjInfoResponse{}
+
+	req, err := http.NewRequest("HEAD", r.url, nil)
+	if err != nil {
+		goiresp.err = fmt.Errorf("New http request err, %v", err)
+		return goiresp
+	}
+
+	req.Header.Set("Date", GMTime())
+	req.Header.Set("Accept-Encoding", "identity")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		goiresp.err = fmt.Errorf("Do request err, %v", err)
+		return goiresp
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		goiresp.err = fmt.Errorf("Response StatusCode(%d) != 200", resp.StatusCode)
+		return goiresp
+	}
+
+	l, _ := strconv.ParseInt(resp.Header.Get("Content-Length"), 10, 64)
+
+	goiresp.Size = l
+	goiresp.LastModified = resp.Header.Get("Last-Modified")
+	goiresp.ETag = resp.Header.Get("ETag")
+
+	return goiresp
+}
+
+func (r *GetObjInfoRequest) getByName(p *RequestParam) Response {
+	var goiresp = &GetObjInfoResponse{}
+
+	url := fmt.Sprintf("http://%s/%s/%s", p.Host, r.bucket, r.objName)
+	req, err := http.NewRequest("HEAD", url, nil)
+	if err != nil {
+		goiresp.err = fmt.Errorf("New http request err, %v", err)
+		return goiresp
+	}
+
+	req.Header.Set("Date", GMTime())
+	req.Header.Set("Accept-Encoding", "identity")
+	req.Header.Set("Authorization", fmt.Sprintf("%s %s:%s", "AWS", p.AccessKey, Signature(p.SecretKey, req)))
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		goiresp.err = fmt.Errorf("Do request err, %v", err)
+		return goiresp
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		goiresp.err = fmt.Errorf("Response StatusCode(%d) != 200", resp.StatusCode)
+		return goiresp
+	}
+
+	l, _ := strconv.ParseInt(resp.Header.Get("Content-Length"), 10, 64)
+
+	goiresp.Size = l
+	goiresp.LastModified = resp.Header.Get("Last-Modified")
+	goiresp.ETag = resp.Header.Get("ETag")
+
+	return goiresp
+}
+
+type GetObjInfoResponse struct {
+	Size         int64
+	LastModified string
+	ETag         string
+
+	err error
+}
+
+func (r GetObjInfoResponse) Err() error {
 	return r.err
 }

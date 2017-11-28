@@ -6,8 +6,10 @@ import (
 	"encoding/base64"
 	"fmt"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
+	"time"
 )
 
 var QsaOfInterest map[string]struct{}
@@ -59,6 +61,8 @@ func Signature(secretKey string, r *http.Request) string {
 		case "date", "content-type", "content-md5":
 			h[lowerKey] = strings.Join(v, " ")
 			sortedKeys = append(sortedKeys, lowerKey)
+		case "expires":
+			h[lowerKey] = strings.Join(v, " ")
 		}
 	}
 
@@ -74,6 +78,11 @@ func Signature(secretKey string, r *http.Request) string {
 	if _, ok := h["content-type"]; !ok {
 		h["content-type"] = ""
 		sortedKeys = append(sortedKeys, "content-type")
+	}
+	if v, ok := h["expires"]; ok {
+		// 如果有设置expires时间，则用其替换date
+		h["date"] = v
+		// no need to append again
 	}
 
 	// 所有header按照key排序
@@ -126,4 +135,30 @@ func Hashmac(msg, key []byte) []byte {
 	mac := hmac.New(sha1.New, key)
 	mac.Write(msg)
 	return mac.Sum(nil)
+}
+
+// GenDownloadUrl: 生成对象的下载链接
+// @param signed  : 是否携带签名
+// @param expired : 下载链接有效时间
+func GenDownloadUrl(bucket, objName string, p *RequestParam, signed bool, expired int64) string {
+	bucket = url.PathEscape(bucket)
+	objName = url.PathEscape(objName)
+
+	// 下面生成签名需要依赖这个path
+	path := fmt.Sprintf("http://%s/%s/%s", p.Host, bucket, objName)
+
+	if signed {
+		expiredStr := fmt.Sprintf("%d", time.Now().Add(time.Duration(expired)*time.Second).Unix())
+		expiredStr = "1511865725"
+		req, _ := http.NewRequest("GET", path, nil)
+		req.Header.Set("Expires", expiredStr)
+
+		signature := url.QueryEscape(Signature(p.SecretKey, req))
+		expiredStr = url.QueryEscape(expiredStr)
+
+		path = fmt.Sprintf("http://%s/%s/%s?Signature=%s&Expires=%s&AWSAccessKeyId=%s",
+			p.Host, bucket, objName, signature, expiredStr, p.AccessKey)
+	}
+
+	return path
 }

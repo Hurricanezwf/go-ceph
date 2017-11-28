@@ -30,6 +30,8 @@ func init() {
 	funcMap["getallbuckets"] = GetAllBuckets
 	funcMap["getbucket"] = GetBucket
 	funcMap["putobj"] = PutObj
+	funcMap["getobj"] = GetObj
+	funcMap["getobjinfo"] = GetObjInfo
 }
 
 func main() {
@@ -97,6 +99,7 @@ func GetBucket(c *ceph.Ceph) {
 func PutObj(c *ceph.Ceph) {
 	start := time.Now()
 	req := ceph.NewPutObjRequest(bucket, objName, filePath)
+	req.EnableGenDownloadUrl(true, 3600)
 	resp := c.Do(req)
 	if err := resp.Err(); err != nil {
 		log.Printf("%v\n", err)
@@ -109,5 +112,38 @@ func PutObj(c *ceph.Ceph) {
 		return
 	}
 
-	log.Printf("PubObj done, etag: %s, elapse: %v\n", poresp.ETag, time.Since(start))
+	log.Printf("PubObj done, elapse: %v\n", time.Since(start))
+	log.Printf("ETag       : %s\n", poresp.ETag)
+	log.Printf("Base64Md5  : %s\n", poresp.Base64Md5)
+	log.Printf("DownloadURL: %s\n", poresp.DownloadUrl)
+}
+
+func GetObj(c *ceph.Ceph) {
+	start := time.Now()
+	req := ceph.NewGetObjRequest(bucket, objName, filePath)
+	//req := ceph.NewGetObjByUrlRequest(bucket, filePath)
+	resp := c.Do(req)
+	if err := resp.Err(); err != nil {
+		log.Printf("%v\n", err)
+		return
+	}
+
+	log.Printf("GetObj done, elapse: %v\n", time.Since(start))
+}
+
+func GetObjInfo(c *ceph.Ceph) {
+	req := ceph.NewGetObjInfoRequest(bucket, objName)
+	resp := c.Do(req)
+	if err := resp.Err(); err != nil {
+		log.Printf("%v\n", err)
+		return
+	}
+
+	goiresp, ok := resp.(*ceph.GetObjInfoResponse)
+	if !ok {
+		log.Printf("Invalid response type, type is %v", reflect.TypeOf(resp))
+		return
+	}
+
+	log.Printf("[GetObjInfo] Size:%d, LastModified:%s, ETag:%s\n", goiresp.Size, goiresp.LastModified, goiresp.ETag)
 }
