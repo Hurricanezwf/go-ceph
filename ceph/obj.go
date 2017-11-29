@@ -375,10 +375,18 @@ func (r *GetObjRequest) getByURL(p *RequestParam) Response {
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode != 200 {
+		body, _ := ioutil.ReadAll(resp.Body)
+		goresp.err = errors.New(string(body))
+		return goresp
+	}
+
 	// 保存对象文件到本地
 	if err = r.save(r.savePath, resp.Body); err != nil {
 		goresp.err = err
+		return goresp
 	}
+
 	return goresp
 }
 
@@ -413,10 +421,18 @@ func (r *GetObjRequest) getByName(p *RequestParam) Response {
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode != 200 {
+		body, _ := ioutil.ReadAll(resp.Body)
+		goresp.err = errors.New(string(body))
+		return goresp
+	}
+
 	// 保存对象文件到本地
 	if err = r.save(r.savePath, resp.Body); err != nil {
 		goresp.err = err
+		return goresp
 	}
+
 	return goresp
 }
 
