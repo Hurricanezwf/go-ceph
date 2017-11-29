@@ -241,8 +241,6 @@ func (r *PutObjRequest) Do(p *RequestParam) Response {
 				break
 			}
 
-			poresp.ETag = strings.Trim(resp.Header.Get("ETag"), "\"")
-			poresp.Base64Md5 = md5
 			if r.genUrl {
 				download, err := GenDownloadUrl(r.bucket, r.objName, p, r.signed, r.expired)
 				if err != nil {
@@ -251,6 +249,9 @@ func (r *PutObjRequest) Do(p *RequestParam) Response {
 				}
 				poresp.DownloadUrl = download
 			}
+
+			poresp.ETag = strings.Trim(resp.Header.Get("ETag"), "\"")
+			poresp.Base64Md5 = md5
 		}
 
 		if resp != nil {
