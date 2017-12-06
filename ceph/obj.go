@@ -334,7 +334,6 @@ type GetObjRequest struct {
 	// base64(md5)的值
 	base64Md5 string
 
-	/* 以下内部使用 */
 	// 对象大小
 	objSize int64
 
@@ -369,6 +368,10 @@ func (r *GetObjRequest) SetEnableProgress(enable bool) *GetObjRequest {
 	r.enableProgress = enable
 	r.progress.Store(float64(0))
 	return r
+}
+
+func (r *GetObjRequest) ObjSize() int64 {
+	return r.objSize
 }
 
 func (r *GetObjRequest) Progress() float64 {
