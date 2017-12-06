@@ -135,7 +135,7 @@ func (r *PutObjRequest) Do(p *RequestParam) Response {
 		close(writeDoneC)
 	}()
 
-	// 读取返回, 因为对方发送完回复后会立刻关闭连接，所以必须在对方发送的时候保证有读操作
+	// 读取返回, 因为对方发送完回复后会立刻关闭连接，所以必需在对方发送的时候保证有读操作
 	go func(w *sync.WaitGroup) {
 		w.Add(1)
 		defer func() {
@@ -281,10 +281,10 @@ func (r PutObjResponse) Err() error {
 type GetObjRequest struct {
 	tp int
 
-	// 当TypeByURL时必须
+	// 当TypeByURL时必需
 	url string
 
-	// 当tp==TypeByName时必须
+	// 当tp==TypeByName时必需
 	bucket  string
 	objName string
 
@@ -494,10 +494,10 @@ func (r GetObjResponse) Err() error {
 type GetObjInfoRequest struct {
 	tp int
 
-	// 当tp==TypeByURL时必须
+	// 当tp==TypeByURL时必需
 	url string
 
-	// 当tp==TypeByName时必须
+	// 当tp==TypeByName时必需
 	bucket  string
 	objName string
 }
