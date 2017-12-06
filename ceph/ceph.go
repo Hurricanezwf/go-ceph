@@ -2,6 +2,14 @@ package ceph
 
 import "fmt"
 
+type Request interface {
+	Do(p *RequestParam) Response
+}
+
+type Response interface {
+	Err() error
+}
+
 type Ceph struct {
 	IP   string
 	Port int

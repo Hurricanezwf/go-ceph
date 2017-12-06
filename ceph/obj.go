@@ -34,6 +34,10 @@ type PutObjRequest struct {
 	genUrl  bool
 	signed  bool
 	expired int64
+
+	/* 以下内部使用 */
+	enableProgress bool
+	progress       atomic.Value
 }
 
 func NewPutObjRequest(bucket, objName, filePath string) *PutObjRequest {
@@ -46,16 +50,29 @@ func NewPutObjRequest(bucket, objName, filePath string) *PutObjRequest {
 
 // @param signed  : 是否在URL中生成签名
 // @param expired : 下载链接有效时间，单位秒
-func (r *PutObjRequest) EnableGenDownloadUrl(signed bool, expired int64) {
+func (r *PutObjRequest) EnableGenDownloadUrl(signed bool, expired int64) *PutObjRequest {
 	r.genUrl = true
 	r.signed = signed
 	r.expired = expired
+	return r
 }
 
-func (r *PutObjRequest) DisableGenDownloadUrl() {
+func (r *PutObjRequest) DisableGenDownloadUrl() *PutObjRequest {
 	r.genUrl = false
 	r.signed = false
 	r.expired = 0
+	return r
+}
+
+func (r *PutObjRequest) SetEnableProgress(enable bool) *PutObjRequest {
+	r.enableProgress = enable
+	r.progress.Store(float64(0))
+	return r
+}
+
+func (r *PutObjRequest) Progress() float64 {
+	v := r.progress.Load()
+	return v.(float64)
 }
 
 func (r *PutObjRequest) Do(p *RequestParam) Response {
@@ -171,6 +188,13 @@ func (r *PutObjRequest) Do(p *RequestParam) Response {
 			w.Done()
 		}()
 
+		var (
+			err            error
+			n              int
+			writeCount     int64
+			lastUpdateTime time.Time
+		)
+
 		// 写http头
 		if _, err = conn.Write(buf.Bytes()); err != nil {
 			notifyErrC <- fmt.Errorf("Write http header err, %v", err)
@@ -181,8 +205,7 @@ func (r *PutObjRequest) Do(p *RequestParam) Response {
 		f.Seek(0, os.SEEK_SET)
 		chunk := make([]byte, 8192)
 		for {
-			n, err := f.Read(chunk)
-			if err != nil {
+			if n, err = f.Read(chunk); err != nil {
 				if err == io.EOF {
 					break
 				}
@@ -194,14 +217,30 @@ func (r *PutObjRequest) Do(p *RequestParam) Response {
 			}
 
 			conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-			if _, err = conn.Write(chunk[:n]); err != nil {
+			if n, err = conn.Write(chunk[:n]); err != nil {
 				notifyErrC <- fmt.Errorf("Send err, %v", err)
 				return
+			}
+			writeCount += int64(n)
+
+			// 记录进度
+			if r.enableProgress {
+				now := time.Now()
+				if now.Sub(lastUpdateTime) < time.Second {
+					continue
+				}
+				if fileSize > 0 {
+					r.progress.Store(float64(writeCount * int64(100) / fileSize))
+					lastUpdateTime = now
+				}
 			}
 		}
 		if _, err = conn.Write([]byte("\r\n")); err != nil {
 			notifyErrC <- fmt.Errorf("Send err, %v", err)
 			return
+		}
+		if r.enableProgress {
+			r.progress.Store(float64(1))
 		}
 	}(&wg)
 
@@ -295,8 +334,13 @@ type GetObjRequest struct {
 	// base64(md5)的值
 	base64Md5 string
 
-	// 内部使用
+	/* 以下内部使用 */
+	// 对象大小
 	objSize int64
+
+	// 下载进度
+	enableProgress bool
+	progress       atomic.Value // float64 [0,100]
 }
 
 func NewGetObjRequest(bucket, objName, savePath string) *GetObjRequest {
@@ -316,8 +360,20 @@ func NewGetObjByUrlRequest(url, savePath string) *GetObjRequest {
 	}
 }
 
-func (r *GetObjRequest) SetBase64Md5(v string) {
+func (r *GetObjRequest) SetBase64Md5(v string) *GetObjRequest {
 	r.base64Md5 = v
+	return r
+}
+
+func (r *GetObjRequest) SetEnableProgress(enable bool) *GetObjRequest {
+	r.enableProgress = enable
+	r.progress.Store(float64(0))
+	return r
+}
+
+func (r *GetObjRequest) Progress() float64 {
+	v := r.progress.Load()
+	return v.(float64)
 }
 
 func (r *GetObjRequest) Do(p *RequestParam) Response {
@@ -446,6 +502,34 @@ func (r *GetObjRequest) save(savePath string, src io.Reader) error {
 			return fmt.Errorf("Open file %s err, %v", tmpPath, err)
 		}
 		defer f.Close()
+
+		// 启用进度显示
+		var stopC chan struct{}
+		defer func() {
+			if stopC != nil {
+				close(stopC)
+			}
+		}()
+		if r.enableProgress {
+			stopC = make(chan struct{})
+			go func() {
+				for {
+					select {
+					case <-stopC:
+						r.progress.Store(float64(100))
+						return
+					case <-time.After(time.Second):
+						info, err := f.Stat()
+						if err == nil {
+							continue
+						}
+						if r.objSize > 0 {
+							r.progress.Store(float64((info.Size() - 1) * int64(100) / r.objSize))
+						}
+					}
+				}
+			}()
+		}
 
 		written, err := io.Copy(f, src)
 		if err != nil {

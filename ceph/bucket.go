@@ -14,14 +14,6 @@ var (
 	ErrBucketNotExist = errors.New("Bucket not exist")
 )
 
-type Request interface {
-	Do(p *RequestParam) Response
-}
-
-type Response interface {
-	Err() error
-}
-
 ////////////////////////////////////////////////////////////
 type RequestParam struct {
 	Host      string //ip:port
