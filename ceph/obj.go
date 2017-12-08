@@ -37,7 +37,7 @@ type PutObjRequest struct {
 
 	/* 以下内部使用 */
 	enableProgress bool
-	progress       atomic.Value
+	progress       atomic.Value // [0,100] float64
 }
 
 func NewPutObjRequest(bucket, objName, filePath string) *PutObjRequest {
@@ -240,7 +240,7 @@ func (r *PutObjRequest) Do(p *RequestParam) Response {
 			return
 		}
 		if r.enableProgress {
-			r.progress.Store(float64(1))
+			r.progress.Store(float64(100))
 		}
 	}(&wg)
 
